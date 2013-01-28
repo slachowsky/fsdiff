@@ -10,6 +10,29 @@
 
 #include <libtar.h>
 
+#define main bsdiff_main
+#include "bsdiff.c"
+#undef main
+
+static int bsdiff(char *oldfile, char *newfile, char *patchfile)
+{
+	int cpid, ret;
+	char *argv[5] = { "bsdiff", oldfile, newfile, patchfile, NULL};
+
+	cpid = fork();
+	if (cpid == -1) {
+		perror("fork");
+		return 1;
+	}
+	if (cpid == 0) {
+		ret = bsdiff_main(4, argv);
+		exit(ret);
+	} else {
+		wait(&ret);
+	}
+	return WEXITSTATUS(ret);
+}
+
 TAR *t;
 
 static char *base1;
@@ -100,7 +123,7 @@ static int do_diff(struct dirent *d1, struct dirent *d2)
 	char realname1[PATH_MAX];
 	char realname2[PATH_MAX];
 	char savename[PATH_MAX];
-	char cmd[4096];
+	//char cmd[4096];
 	printf("%s/%s differs\n", prefix, d1->d_name);
 
 	sprintf(realname1, "%s%s/%s", base1, prefix, d1->d_name);
@@ -112,8 +135,9 @@ static int do_diff(struct dirent *d1, struct dirent *d2)
 	//sprintf(cmd, "/usr/bin/xdelta3 -e -s %s %s patch", realname1, realname2);
 	//sprintf(cmd, "/usr/bin/xdelta3 -e -S djw -9 -s %s %s patch", realname1, realname2);
 	//sprintf(cmd, "/usr/bin/bsdiff %s %s patch", realname1, realname2);
-	sprintf(cmd, "/home/stephan/src/fsdiff/bsdiff %s %s patch", realname1, realname2);
-	system(cmd);
+	//sprintf(cmd, "/home/stephan/src/fsdiff/bsdiff %s %s patch", realname1, realname2);
+	//system(cmd);
+	bsdiff(realname1, realname2, "patch");
 
 	ret = lstat(realname2, &sb);
 	th_set_from_stat(t, &sb);
@@ -125,7 +149,8 @@ static int do_diff(struct dirent *d1, struct dirent *d2)
 		th_print_long_ls(t);
 	th_write(t);
 	tar_append_regfile(t, "patch");
-	system("rm patch");
+	//system("rm patch");
+	unlink("patch");
 }
 
 static int cmpdir(const char* a, const char* b)
