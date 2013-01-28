@@ -69,14 +69,16 @@ static int do_add(struct dirent *d)
 
 	sprintf(realname, "%s%s/%s", base2, prefix, d->d_name);
 	sprintf(savename, "%s%s/%s", "add", prefix, d->d_name);
+
+	fprintf(stderr, "%s/%s was added\n", prefix, d->d_name);
+	if(!t) return 0;
+
 	if(d->d_type == DT_DIR)
 		ret = tar_append_tree(t, realname, savename);
 	else
 		ret = tar_append_file(t, realname, savename);
 	if(ret < 0)
 		perror("tar_append_file");
-
-	printf("%s/%s was added\n", prefix, d->d_name);
 }
 
 static int do_delete(struct dirent *d)
@@ -104,6 +106,9 @@ static int do_delete(struct dirent *d)
 		prefix[len] = 0;
 	}
 
+	fprintf(stderr, "%s/%s was deleted\n", prefix, d->d_name);
+	if(!t) return 0;
+
 	ret = lstat(realname, &sb);
 	th_set_from_stat(t, &sb);
 	th_set_path(t, savename);
@@ -112,8 +117,6 @@ static int do_delete(struct dirent *d)
 	if(t->options & TAR_VERBOSE)
 		th_print_long_ls(t);
 	th_write(t);
-
-	printf("%s/%s was deleted\n", prefix, d->d_name);
 }
 
 static int do_diff(struct dirent *d1, struct dirent *d2)
@@ -124,7 +127,8 @@ static int do_diff(struct dirent *d1, struct dirent *d2)
 	char realname2[PATH_MAX];
 	char savename[PATH_MAX];
 	//char cmd[4096];
-	printf("%s/%s differs\n", prefix, d1->d_name);
+	fprintf(stderr, "%s/%s differs\n", prefix, d1->d_name);
+	if(!t) return 0;
 
 	sprintf(realname1, "%s%s/%s", base1, prefix, d1->d_name);
 	sprintf(realname2, "%s%s/%s", base2, prefix, d2->d_name);
@@ -190,14 +194,14 @@ static int cmpdir(const char* a, const char* b)
 			sprintf(buf2, "%s/%s", b, namelist2[i2]->d_name);
 			if(namelist1[i1]->d_type != namelist2[i2]->d_type)
 			{
-				printf("%s types differ, delete then add?\n", namelist1[i1]->d_name);
+				fprintf(stderr, "%s types differ, delete then add?\n", namelist1[i1]->d_name);
 			} else if(namelist1[i1]->d_type == DT_LNK) {
 				int len1, len2;
 				len1 = readlink(buf1, buf1, 1024);
 				len2 = readlink(buf2, buf2, 1024);
 				//printf("SYMLINK %d %d\n", len1, len2);
 				if(len1 != len2 || strncmp(buf1, buf2, len1)) {
-					printf("%s symlink target mismatch\n", namelist1[i1]->d_name);
+					fprintf(stderr, "%s symlink target mismatch\n", namelist1[i1]->d_name);
 				}
 			} else if(namelist1[i1]->d_type == DT_DIR) {
 				int len;
@@ -211,10 +215,10 @@ static int cmpdir(const char* a, const char* b)
 				struct stat sb1, sb2;
 				ret = stat(buf1, &sb1);
 				if(ret != 0)
-					printf("couldn't stat %s\n", buf1);
+					fprintf(stderr, "couldn't stat %s\n", buf1);
 				ret = stat(buf2, &sb2);
 				if(ret != 0)
-					printf("couldn't stat %s\n", buf2);
+					fprintf(stderr, "couldn't stat %s\n", buf2);
 				if(sb1.st_size != sb2.st_size ||
 						cmpfiles(buf1, buf2, sb1.st_size)) {
 					 do_diff(namelist1[i1], namelist2[i2]);
@@ -234,21 +238,30 @@ static int cmpdir(const char* a, const char* b)
 int main(int argc, char **argv)
 {
 	int ret;
-	if(argc != 3) {
-		fprintf(stderr, "Usage: %s old new\n", argv[0]);
+	if(argc < 3) {
+		fprintf(stderr, "Usage: %s old new [patch]\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
-	ret = tar_open(&t, "test.tar", NULL, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU|S_IRWXG|S_IRWXO, TAR_GNU/*|TAR_VERBOSE*/);
-	if(ret != 0) {
-		printf("%d\n", ret);
-		perror("tar_open");
+	t = NULL;
+
+	if(argc >= 4) {
+		if(!strcmp(argv[3], "-"))
+			ret = tar_fdopen(&t, 1, "stdout", NULL, O_WRONLY|O_CREAT, 0644, TAR_GNU/*|TAR_VERBOSE*/);
+		else
+			ret = tar_open(&t, argv[3], NULL, O_WRONLY|O_CREAT, 0644, TAR_GNU/*|TAR_VERBOSE*/);
+		if(ret != 0) {
+			fprintf(stderr, "%d\n", ret);
+			perror("tar_open");
+		}
 	}
+
 	base1 = argv[1];
 	base2 = argv[2];
 	cmpdir(argv[1], argv[2]);
 
-	tar_close(t);
+	if(t)
+		tar_close(t);
 
 	return 0;
 }
