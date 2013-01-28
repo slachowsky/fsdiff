@@ -1,2 +1,7 @@
 bsdiff
 bspatch
+fsdiff
+fspatch
+*.o
+*~
+*.swp
