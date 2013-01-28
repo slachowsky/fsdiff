@@ -131,23 +131,31 @@ static off_t offtin(const u_char *buf)
 	return y;
 }
 
-static int bspatch(const char *oldfile, const char *newfile, const void* patch)
+static int bspatch(const char *oldfile, const char *newfile, int patch)
 {
-	const u_char *header = patch;
-	const u_char *control, *diff, *extra;
+	const u_char header[32];
 	u_char *old, *new;
 	ssize_t oldsize, newsize;
+	ssize_t ctrlsize, diffsize, nctrl;
 	off_t oldpos, newpos;
-	off_t ctrl[3];
-	off_t i;
+	off_t *ctrl;
+	off_t i, j;
 	int fd, ret;
+
+	read(patch, header, sizeof(header));
 
 	if (memcmp(header, "BSDIFFXX", 8) != 0)
 		return 1;
 
-	control = patch + 32;
-	diff = control + offtin(header + 8);
-	extra = diff + offtin(header + 16);
+	ctrlsize = offtin(header + 8);
+	diffsize = offtin(header + 16);
+	newsize = offtin(header + 24);
+
+	ctrl = malloc(ctrlsize);
+	read(patch, ctrl, ctrlsize);
+	nctrl = ctrlsize/sizeof(off_t);
+	for(i=0;i<nctrl;i++)
+		ctrl[i] = offtin((u_char*)&ctrl[i]);
 
 	fd = open(oldfile, O_RDONLY);
 	oldsize = lseek(fd, 0, SEEK_END);
@@ -155,7 +163,6 @@ static int bspatch(const char *oldfile, const char *newfile, const void* patch)
 	close(fd);
 
 	fd = open(newfile, O_CREAT|O_RDWR, 0666);
-	newsize = offtin(header + 24);
 	ret = ftruncate(fd, newsize);
 	new = mmap(NULL, newsize, PROT_WRITE, MAP_SHARED, fd, 0);
 	if (new == MAP_FAILED)
@@ -163,58 +170,35 @@ static int bspatch(const char *oldfile, const char *newfile, const void* patch)
 	close(fd);
 
 	oldpos=0;newpos=0;
-	while(newpos<newsize) {
-		/* Read control data */
-		for(i=0;i<=2;i++) {
-			ctrl[i]=offtin(control);
-			control += 8;
-		};
-
-		///* Sanity-check */
-		//if(newpos+ctrl[0]>newsize)
-		//	errx(1,"Corrupt patch\n");
+	for(j=0;j<nctrl;j+=3) {
+		off_t x = ctrl[j], y = ctrl[j+1], z = ctrl[j+2];
 
 		/* Read diff string */
-		//lenread = BZ2_bzRead(&dbz2err, dpfbz2, new + newpos, ctrl[0]);
-		//if ((lenread < ctrl[0]) ||
-		//    ((dbz2err != BZ_OK) && (dbz2err != BZ_STREAM_END)))
-		//		errx(1, "Corrupt patch\n");
+		read(patch, new + newpos, x);
 
-		///* Add old data to diff string */
-		//for(i=0;i<ctrl[0];i++)
-		//	if((oldpos+i>=0) && (oldpos+i<oldsize))
-		//		new[newpos+i]+=old[oldpos+i];
-
-		for (i = 0; i < ctrl[0]; i++)
+		/* Add old data to diff string */
+		for(i=0;i<x;i++)
 			if((oldpos+i>=0) && (oldpos+i<oldsize))
-				new[newpos+i] = old[oldpos+i] + diff[i];
-			else {
-				new[newpos+i] = diff[i];
-				printf("Found an exceptional patch case!\n");
-			}
-		diff += ctrl[0];
-		
-		/* Adjust pointers */
-		newpos+=ctrl[0];
-		oldpos+=ctrl[0];
-
-		///* Sanity-check */
-		//if(newpos+ctrl[1]>newsize)
-		//	  errx(1,"Corrupt patch\n");
-
-		///* Read extra string */
-		//lenread = BZ2_bzRead(&ebz2err, epfbz2, new + newpos, ctrl[1]);
-		//if ((lenread < ctrl[1]) ||
-		//	  ((ebz2err != BZ_OK) && (ebz2err != BZ_STREAM_END)))
-		//		errx(1, "Corrupt patch\n");
-		memcpy(new + newpos, extra, ctrl[1]);
-		extra += ctrl[1];
+				new[newpos+i]+=old[oldpos+i];
 
 		/* Adjust pointers */
-		newpos+=ctrl[1];
-		oldpos+=ctrl[2];
-	};
+		newpos+=x+y;
+		oldpos+=x+z;
+	}
+	oldpos=0;newpos=0;
+	for(j=0;j<nctrl;j+=3) {
+		off_t x = ctrl[j], y = ctrl[j+1], z = ctrl[j+2];
 
+		/* Read extra string */
+		read(patch, new + newpos + x, y);
+
+		/* Adjust pointers */
+		newpos+=x+y;
+	}
+
+	//while(newpos<newsize) check me!
+
+	free(ctrl);
 	munmap(old, oldsize);
 	munmap(new, newsize);
 	return 0;
@@ -248,6 +232,8 @@ static int do_delete(const char* name)
 static int do_patch(const char* name)
 {
 	int ret;
+	size_t size;
+	int pipefd[2];
 	void *patch;
 	char realname[PATH_MAX];
 	char tmpname[PATH_MAX];
@@ -256,10 +242,19 @@ static int do_patch(const char* name)
 	sprintf(tmpname, "%s/%sXXXXXX", base, name);
 	printf("patching %s\n", realname);
 	//tar_extract_regfile(t, patchname);
-	tar_buffer_regfile(t, &patch, NULL);
-	ret = bspatch(realname, tmpname, patch);
-	//printf("bspatch returned %d\n", ret);
+	tar_buffer_regfile(t, &patch, &size);
+	pipe(pipefd);
+	if(fork()) {
+		close(pipefd[1]);
+		ret = bspatch(realname, tmpname, pipefd[0]);
+		wait(NULL);
+	} else {
+		close(pipefd[0]);
+		ret = write(pipefd[1], patch, size);
+		exit(0);
+	}
 	free(patch);
+	//printf("bspatch returned %d\n", ret);
 	//system(cmd);
 	unlink(realname);
 	link(tmpname, realname);
