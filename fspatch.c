@@ -247,7 +247,6 @@ static int do_patch(const char* name)
 				exit(EXIT_FAILURE);
 			}
 			ret = xwrite(pipefd[1], buf, T_BLOCKSIZE);
-			usleep(223);
 		}
 		exit(0);
 	}
