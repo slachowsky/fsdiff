@@ -1,0 +1,6 @@
+- check file stat against archive during changes (warn newer, etc.)
+- check error conditions
+- add crc to header to check before/after patching
+- experiment with patch format interleaving (no memory overhead for patching)
+- experiment with patch format data alignment
+- add compression results
