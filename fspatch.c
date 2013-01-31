@@ -14,6 +14,34 @@
 static TAR *t;
 static const char* base;
 
+static int xread(int fd, void *buf, size_t count)
+{
+	int ret, len = 0;
+	do {
+		ret = read(fd, buf+len, count-len);
+		if (ret == -1 && errno == EINTR)
+			continue;
+		if (ret < 0)
+			return ret;
+		len += ret;
+	} while (len < count);
+	return len;
+}
+
+static int xwrite(int fd, const void *buf, size_t count)
+{
+	int ret, len = 0;
+	do {
+		ret = write(fd, buf+len, count-len);
+		if (ret == -1 && errno == EINTR)
+			continue;
+		if (ret < 0)
+			return ret;
+		len += ret;
+	} while (len < count);
+	return len;
+}
+
 /* libtar */
 #define HAVE_LCHOWN
 static int
@@ -72,46 +100,6 @@ tar_set_file_perms(TAR *t, char *realname)
 	return 0;
 }
 
-/* return a buffer of the regfile contents */
-int
-tar_buffer_regfile(TAR *t, void **buffer, size_t *psize)
-{
-	size_t size;
-	int i, k;
-	void *buf;
-
-#ifdef DEBUG
-	printf("==> tar_extract_regfile(t=0x%lx, realname=\"%s\")\n", t,
-	       realname);
-#endif
-
-	if (!TH_ISREG(t))
-	{
-		errno = EINVAL;
-		return -1;
-	}
-
-	size = th_get_size(t);
-
-	*buffer = buf = malloc((size + T_BLOCKSIZE - 1) & ~(T_BLOCKSIZE-1));
-	if(psize)
-		*psize = size;
-
-	/* buffer the file */
-	for (i = size; i > 0; i -= T_BLOCKSIZE, buf += T_BLOCKSIZE)
-	{
-		k = tar_block_read(t, buf);
-		if (k != T_BLOCKSIZE)
-		{
-			if (k != -1)
-				errno = EINVAL;
-			return -1;
-		}
-	}
-
-	return 0;
-}
-
 /* bspatch */
 static off_t offtin(const u_char *buf)
 {
@@ -133,7 +121,7 @@ static off_t offtin(const u_char *buf)
 
 static int bspatch(const char *oldfile, const char *newfile, int patch)
 {
-	const u_char header[32];
+	u_char header[32];
 	u_char *old, *new;
 	ssize_t oldsize, newsize;
 	ssize_t ctrlsize, diffsize, nctrl;
@@ -142,7 +130,7 @@ static int bspatch(const char *oldfile, const char *newfile, int patch)
 	off_t i, j;
 	int fd, ret;
 
-	read(patch, header, sizeof(header));
+	ret = xread(patch, header, sizeof(header));
 
 	if (memcmp(header, "BSDIFFXX", 8) != 0)
 		return 1;
@@ -152,7 +140,7 @@ static int bspatch(const char *oldfile, const char *newfile, int patch)
 	newsize = offtin(header + 24);
 
 	ctrl = malloc(ctrlsize);
-	read(patch, ctrl, ctrlsize);
+	ret = xread(patch, ctrl, ctrlsize);
 	nctrl = ctrlsize/sizeof(off_t);
 	for(i=0;i<nctrl;i++)
 		ctrl[i] = offtin((u_char*)&ctrl[i]);
@@ -174,7 +162,7 @@ static int bspatch(const char *oldfile, const char *newfile, int patch)
 		off_t x = ctrl[j], y = ctrl[j+1], z = ctrl[j+2];
 
 		/* Read diff string */
-		read(patch, new + newpos, x);
+		ret = xread(patch, new + newpos, x);
 
 		/* Add old data to diff string */
 		for(i=0;i<x;i++)
@@ -185,12 +173,12 @@ static int bspatch(const char *oldfile, const char *newfile, int patch)
 		newpos+=x+y;
 		oldpos+=x+z;
 	}
-	oldpos=0;newpos=0;
+	newpos=0;
 	for(j=0;j<nctrl;j+=3) {
-		off_t x = ctrl[j], y = ctrl[j+1], z = ctrl[j+2];
+		off_t x = ctrl[j], y = ctrl[j+1];
 
 		/* Read extra string */
-		read(patch, new + newpos + x, y);
+		ret = xread(patch, new + newpos + x, y);
 
 		/* Adjust pointers */
 		newpos+=x+y;
@@ -208,7 +196,7 @@ static int do_add(const char* name)
 {
 	char realname[PATH_MAX];
 	sprintf(realname, "%s/%s", base, name);
-	printf("adding %s\n", realname);
+	fprintf(stderr, "adding %s\n", realname);
 	tar_extract_file(t, realname);
 }
 
@@ -217,7 +205,7 @@ static int do_delete(const char* name)
 	int ret;
 	char realname[PATH_MAX];
 	sprintf(realname, "%s/%s", base, name);
-	printf("deleting %s\n", realname);
+	fprintf(stderr, "deleting %s\n", realname);
 	if(TH_ISDIR(t)) {
 		ret = rmdir(realname);
 		if(ret == -1)
@@ -234,53 +222,65 @@ static int do_patch(const char* name)
 	int ret;
 	size_t size;
 	int pipefd[2];
-	void *patch;
 	char realname[PATH_MAX];
 	char tmpname[PATH_MAX];
-	//char cmd[4096];
 	sprintf(realname, "%s/%s", base, name);
 	sprintf(tmpname, "%s/%sXXXXXX", base, name);
-	printf("patching %s\n", realname);
-	//tar_extract_regfile(t, patchname);
-	tar_buffer_regfile(t, &patch, &size);
-	pipe(pipefd);
+	fprintf(stderr, "patching %s\n", realname);
+
+	ret = pipe(pipefd);
 	if(fork()) {
 		close(pipefd[1]);
 		ret = bspatch(realname, tmpname, pipefd[0]);
 		wait(NULL);
 	} else {
+		int i;
+		int size = th_get_size(t);
+		char buf[T_BLOCKSIZE];
 		close(pipefd[0]);
-		ret = write(pipefd[1], patch, size);
+		for(i=0; i < size; i+= T_BLOCKSIZE) {
+			int k = tar_block_read(t, buf);
+			if (k != T_BLOCKSIZE)
+			{
+				if (k != -1)
+					errno = EINVAL;
+				exit(EXIT_FAILURE);
+			}
+			ret = xwrite(pipefd[1], buf, T_BLOCKSIZE);
+			usleep(223);
+		}
 		exit(0);
 	}
-	free(patch);
 	//printf("bspatch returned %d\n", ret);
-	//system(cmd);
 	unlink(realname);
 	link(tmpname, realname);
 	unlink(tmpname);
-	//unlink(patchname);
 	tar_set_file_perms(t, realname);
 }
 
 int main(int argc, char **argv)
 {
 	int ret;
+	int fd;
 	if(argc != 3) {
 		fprintf(stderr, "Usage: %s patch.tar dir\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
 
-	ret = tar_open(&t, argv[1], NULL, O_RDONLY, 0, TAR_GNU/*|TAR_VERBOSE*/);
+	if(!strcmp(argv[1], "-"))
+		fd = 0;
+	else
+		fd = open(argv[1], O_RDONLY);
+
+	ret = tar_fdopen(&t, fd, argv[1], NULL, O_RDONLY, 0, TAR_GNU/*|TAR_VERBOSE*/);
 	if(ret != 0) {
-		printf("%d\n", ret);
 		perror("tar_open");
+		exit(EXIT_FAILURE);
 	}
 
 	base = argv[2];
 	while( (ret = th_read(t)) == 0) {
 		char* verb = th_get_pathname(t);
-		//printf("tar: %s\n", verb);
 		if(!strncmp(verb, "add/", 4)) {
 			do_add(verb+4);
 		} else if (!strncmp(verb, "delete/", 7)) {
@@ -288,13 +288,12 @@ int main(int argc, char **argv)
 		} else if (!strncmp(verb, "diff/", 5)) {
 			do_patch(verb+5);
 		} else {
-			printf("unknown verb\n");
+			fprintf(stderr, "unknown verb '%s', skipping\n", strtok(verb,"/"));
 			tar_skip_regfile(t);
 		}
 		free(verb);
 	}
 	if(ret < 0) {
-		printf("%d\n", ret);
 		perror("th_read");
 	}
 
