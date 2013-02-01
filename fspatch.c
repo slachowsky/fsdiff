@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -14,7 +15,7 @@
 static TAR *t;
 static const char* base;
 
-static int xread(int fd, void *buf, size_t count)
+static ssize_t xread(int fd, void *buf, size_t count)
 {
 	int ret, len = 0;
 	do {
@@ -28,7 +29,7 @@ static int xread(int fd, void *buf, size_t count)
 	return len;
 }
 
-static int xwrite(int fd, const void *buf, size_t count)
+static ssize_t xwrite(int fd, const void *buf, size_t count)
 {
 	int ret, len = 0;
 	do {
@@ -257,6 +258,8 @@ static int do_patch(const char* name)
 	tar_set_file_perms(t, realname);
 }
 
+static tartype_t type = { open, close, xread, xwrite };
+
 int main(int argc, char **argv)
 {
 	int ret;
@@ -271,7 +274,7 @@ int main(int argc, char **argv)
 	else
 		fd = open(argv[1], O_RDONLY);
 
-	ret = tar_fdopen(&t, fd, argv[1], NULL, O_RDONLY, 0, TAR_GNU/*|TAR_VERBOSE*/);
+	ret = tar_fdopen(&t, fd, argv[1], &type, O_RDONLY, 0, TAR_GNU/*|TAR_VERBOSE*/);
 	if(ret != 0) {
 		perror("tar_open");
 		exit(EXIT_FAILURE);
@@ -294,9 +297,10 @@ int main(int argc, char **argv)
 	}
 	if(ret < 0) {
 		perror("th_read");
+		exit(EXIT_FAILURE);
 	}
 
-	tar_close(t);
+	ret = tar_close(t);
 
 	return ret;
 }
