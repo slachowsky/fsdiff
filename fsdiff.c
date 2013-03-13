@@ -261,8 +261,10 @@ int main(int argc, char **argv)
 	base2 = argv[2];
 	cmpdir(argv[1], argv[2]);
 
-	if(t)
+	if(t) {
+		tar_append_eof(t);
 		tar_close(t);
+	}
 
 	return 0;
 }
